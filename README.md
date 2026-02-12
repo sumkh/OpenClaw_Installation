@@ -9,7 +9,46 @@ This guide provides step-by-step instructions for securely installing OpenClaw o
 - Root or sudo access to the VM
 - Tailscale account (free or paid)
 
-## Security Best Practices Overview
+## 🆕 New Security Features (This Release)
+
+This release adds **network isolation** and **secure credential storage** for production deployments:
+
+### ✅ Tailscale ACL Isolation (`configure-tailscale-acl.sh`)
+Automatically restrict OpenClaw to **ONLY** access external APIs via HTTPS, preventing it from reaching other Tailscale devices:
+
+```bash
+sudo ./configure-tailscale-acl.sh --auto --api-token "tskey-api-xxxxx"
+```
+
+**Restrictions applied:**
+- ✓ Can reach **Google APIs** (HTTPS:443)
+- ✓ Can reach **WhatsApp APIs** (HTTPS:443)
+- ✓ Can query **DNS** (port 53)
+- ✗ **CANNOT** reach other Tailscale devices
+- ✗ **CANNOT** access SSH or file shares on your network
+
+### ✅ VMware Shared Folder Secrets (`VMWARE-SHARED-FOLDERS-SECRETS.md`)
+Store API credentials on the VMware host and mount read-only into containers:
+
+```bash
+# Mount shared folder on VM
+sudo mount -t nfs4 192.168.1.100:/var/shared/openclaw-secrets /mnt/vmshared
+
+# Credentials accessible to containers but cannot be modified
+sudo docker compose exec openclaw-gateway cat /opt/openclaw/secrets/.whatsapp-config.json
+```
+
+**Benefits:**
+- Credentials never stored in Docker image
+- Easy rotation without container rebuild
+- Read-only mount prevents accidental modification
+- Complies with container security best practices
+
+### 📖 Comprehensive Deployment Guides
+
+Start with **[OPENCLAW-SECURE-DEPLOYMENT-GUIDE.md](OPENCLAW-SECURE-DEPLOYMENT-GUIDE.md)** for end-to-end integration (~40 minutes).
+
+---
 
 - Automated system hardening (firewall, SELinux/AppArmor)
 - SSH key-based authentication only
@@ -74,6 +113,99 @@ sudo ./03-setup-tailscale.sh
 - Approve the device
 - Script automatically configures exit node (optional)
 
+**⚠️ NEW: Tailscale ACL Isolation Configuration**
+
+After Tailscale is running, configure network isolation to prevent OpenClaw from reaching other devices:
+
+```bash
+# Option 1: Automatic ACL Setup (RECOMMENDED)
+sudo chmod +x configure-tailscale-acl.sh
+
+# Get your Tailscale API token from:
+# https://login.tailscale.com/admin/settings/personal
+
+# Then run:
+sudo ./configure-tailscale-acl.sh --auto --api-token "tskey-api-xxxxx"
+```
+
+**What this does:**
+- ✓ Restricts OpenClaw to **ONLY** access internet APIs (HTTPS: port 443, DNS: port 53)
+- ✓ Prevents OpenClaw from reaching other Tailscale devices
+- ✓ Allows trusted devices to access OpenClaw gateway (port 18789)
+- ✓ Restricts SSH to admins only
+- ✓ Enforces read-only access to mounted secrets folder
+
+**Verification (after ACL applies, wait 30 seconds):**
+```bash
+# On OpenClaw VM - Should SUCCEED:
+curl -I https://www.google.com     # Access to APIs
+timeout 5 nslookup google.com      # DNS resolution
+
+# On OpenClaw VM - Should FAIL (blocked by ACL):
+timeout 5 nc -zv 100.64.x.1 22    # Cannot reach other devices
+
+# From trusted device - Should SUCCEED:
+curl http://100.64.x.101:18789/health  # Can access gateway
+```
+
+**Why this matters:**
+- Isolates OpenClaw from your other devices and data
+- Prevents lateral movement if OpenClaw is compromised
+- Maintains access to APIs needed for integrations
+- Complies with security best practices
+
+**Full documentation:** See [TAILSCALE-ACL-CONFIGURATION.md](TAILSCALE-ACL-CONFIGURATION.md)
+
+### Step 3B: Mount VMware Shared Folder for Secrets (5 minutes)
+
+Store API credentials securely outside the Docker image using VMware shared folders:
+
+```bash
+# 1. On VMware host, create and export shared folder:
+#    See VMWARE-SHARED-FOLDERS-SECRETS.md for detailed instructions
+
+# 2. On OpenClaw VM, mount the shared folder:
+sudo mkdir -p /mnt/vmshared
+sudo mount -t nfs4 192.168.1.100:/var/shared/openclaw-secrets /mnt/vmshared
+
+# 3. Verify mount and create symlink:
+ls -la /mnt/vmshared/
+sudo ln -s /mnt/vmshared /opt/openclaw/secrets
+
+# 4. Make mount persistent (add to /etc/fstab):
+echo "192.168.1.100:/var/shared/openclaw-secrets /mnt/vmshared nfs4 defaults,ro,hard,intr,_netdev 0 0" | sudo tee -a /etc/fstab
+
+# 5. Test Docker access to secrets:
+sudo docker compose exec openclaw-gateway ls -la /opt/openclaw/secrets/
+```
+
+**Benefits:**
+- ✓ Secrets stored on host, not in Docker image
+- ✓ Easy credential rotation (no image rebuild)
+- ✓ Read-only mount prevents accidental modifications
+- ✓ Credentials encrypted in transit (NFS/Tailscale)
+- ✓ Complies with container security best practices
+
+**Add credentials to shared folder (on host):**
+```bash
+# WhatsApp API config
+cat > /var/shared/openclaw-secrets/.whatsapp-config.json << 'EOF'
+{
+  "account_id": "YOUR_WHATSAPP_ACCOUNT_ID",
+  "access_token": "YOUR_WHATSAPP_ACCESS_TOKEN",
+  "phone_number_id": "YOUR_PHONE_NUMBER_ID",
+  "webhook_token": "YOUR_WEBHOOK_VERIFY_TOKEN"
+}
+EOF
+chmod 600 /var/shared/openclaw-secrets/.whatsapp-config.json
+
+# Google API credentials
+cp ~/Downloads/google-credentials.json /var/shared/openclaw-secrets/.google-credentials.json
+chmod 600 /var/shared/openclaw-secrets/.google-credentials.json
+```
+
+**Full documentation:** See [VMWARE-SHARED-FOLDERS-SECRETS.md](VMWARE-SHARED-FOLDERS-SECRETS.md)
+
 ### Step 4: Post-Installation Security Hardening (2-3 minutes)
 Apply additional security measures:
 ```bash
@@ -103,11 +235,66 @@ sudo netstat -tlnp | grep LISTEN
 - [ ] Firewall is active and rules are applied
 - [ ] OpenClaw service is running
 - [ ] Tailscale is connected and authenticated
+- [ ] **✓ Tailscale ACL isolation configured** (prevents OpenClaw from reaching other devices)
+- [ ] **✓ VMware shared folder mounted** with credentials (WhatsApp, Google APIs)
 - [ ] Automated updates are scheduled
 - [ ] Backups are configured
 - [ ] Monitoring alerts are set up
 
-## Maintenance & Regular Tasks
+## Comprehensive Deployment Guides
+
+This package includes detailed guides for secure, production-ready deployments:
+
+### 🚀 **[OPENCLAW-SECURE-DEPLOYMENT-GUIDE.md](OPENCLAW-SECURE-DEPLOYMENT-GUIDE.md)** (START HERE!)
+Complete end-to-end integration guide covering:
+- Step-by-step installation with timing
+- Network isolation via Tailscale ACL
+- Secrets storage via VMware shared folders
+- Security verification & testing
+- Post-deployment operations & monitoring
+- Troubleshooting quick reference
+
+**Timeline:** ~40 minutes end-to-end
+
+### 🔒 **[TAILSCALE-ACL-CONFIGURATION.md](TAILSCALE-ACL-CONFIGURATION.md)**
+Detailed guide for configuring Tailscale access control lists (ACLs) to isolate OpenClaw:
+- What ACL rules allow/block
+- Automatic vs. manual application
+- Verification testing commands
+- Troubleshooting ACL issues
+- Advanced customization examples
+
+**Key feature:** OpenClaw can ONLY access internet APIs, CANNOT reach other Tailscale devices
+
+### 📁 **[VMWARE-SHARED-FOLDERS-SECRETS.md](VMWARE-SHARED-FOLDERS-SECRETS.md)**
+Complete guide for mounting VMware shared folders to store credentials securely:
+- NFS, CIFS/SMB, VMHGFS mount options
+- Docker volume configuration
+- Persistent mount setup
+- Secrets rotation procedures
+- Permission management & security best practices
+
+**Key feature:** Credentials stored on host, mounted read-only to containers
+
+### 🌐 **[TAILSCALE-INTEGRATION.md](TAILSCALE-INTEGRATION.md)**
+Architecture and integration documentation:
+- Existing Tailscale network compatibility
+- Network topology diagrams
+- Zero-conflict multi-device mesh
+- ACL policy templates & examples
+- Pre/post-installation checklists
+- Security implications
+
+### 💻 **[VMWARE-UBUNTU-24-SETUP-GUIDE.md](VMWARE-UBUNTU-24-SETUP-GUIDE.md)**
+Step-by-step VMware VM provisioning guide:
+- vSphere/Workstation console navigation
+- Hardware specs breakdown (8vCPU, 18GB, 50GB)
+- Ubuntu 24.04 LTS installation walkthrough
+- Post-install hardening (SSH, NTP, static IP)
+- Pre-deployment verification checklist
+- Hardware comparison table (Min/Recommended/Production)
+
+---
 
 ### Daily
 - Monitor OpenClaw status: `sudo systemctl status openclaw`
@@ -209,19 +396,65 @@ sudo systemctl start openclaw
 ## File Structure
 
 ```
-scripts/
-├── 01-initial-setup.sh              # System hardening
-├── 02-install-openclaw.sh           # OpenClaw installation
-├── 03-setup-tailscale.sh            # Tailscale VPN
-├── 04-post-install-security.sh      # Additional security
-├── 05-maintenance.sh                # Maintenance tasks
-├── config/
-│   ├── openssh-hardened.conf        # SSH hardening config
-│   ├── ufw-rules.conf               # Firewall rules
-│   └── openclaw-defaults            # OpenClaw defaults
-├── logs/                             # Installation logs
-└── README.md                         # This file
+OpenClaw_Installation/
+├── 📋 Main Scripts
+│   ├── 01-initial-setup.sh                      # System hardening, firewall, audit
+│   ├── 02-install-openclaw.sh                   # Docker, official OpenClaw build
+│   ├── 03-setup-tailscale.sh                    # Tailscale VPN configuration
+│   ├── 04-post-install-security.sh              # Container & OS hardening
+│   ├── 05-maintenance.sh                        # Health checks, backups, cleanup
+│   │
+│   └── 🔐 Security & Secrets Configuration
+│       ├── configure-tailscale-acl.sh           # ⭐ NEW: Network isolation via ACL
+│       ├── setup-secrets-setup.sh               # Initialize secrets directory
+│       ├── setup-github-ssh.sh                  # Generate SSH keys for GitHub
+│       └── setup-github-sync.sh                 # Push config to JARVIS repo
+│
+├── 📚 Comprehensive Deployment Guides
+│   ├── OPENCLAW-SECURE-DEPLOYMENT-GUIDE.md      # ⭐ START HERE! Complete end-to-end
+│   ├── TAILSCALE-ACL-CONFIGURATION.md           # ⭐ Network isolation details
+│   ├── VMWARE-SHARED-FOLDERS-SECRETS.md         # ⭐ Credentials storage setup
+│   ├── TAILSCALE-INTEGRATION.md                 # Network architecture & compatibility
+│   ├── TAILSCALE-INTEGRATION-IMPACT.md          # Impact analysis on existing network
+│   └── VMWARE-UBUNTU-24-SETUP-GUIDE.md          # VM provisioning (8vCPU/18GB/50GB)
+│
+├── 🐳 Docker Support
+│   ├── docker/
+│   │   ├── Dockerfile                           # Ubuntu 22.04 with OpenClaw
+│   │   ├── docker-compose.yml                   # Local dev setup with volumes
+│   │   └── app/start.sh                         # Health check entrypoint
+│   │
+│   └── CI/CD
+│       ├── .github/workflows/docker-publish.yml # GitHub Actions for Docker Hub push
+│       ├── deploy-to-dockerhub.sh               # Manual Docker Hub deployment
+│       └── post-sync-hook.sh                    # Auto-restart on config change
+│
+├── 📖 Reference Documentation
+│   ├── README.md                                # This file (overview & quick start)
+│   ├── DEPLOYMENT-GUIDE.md                      # Docker & deployment details
+│   ├── CONFIGURATION-REFERENCE.md               # Configuration options
+│   ├── PROJECT-STRUCTURE.md                     # Project breakdown
+│   ├── COMPLETE-SUMMARY.md                      # Feature summary
+│   │
+│   └── GitOps & Configuration
+│       ├── .env.example                         # Environment variables template
+│       ├── .gitignore                           # Secrets exclusion
+│       └── sync-from-jarvis-cron.sh             # Periodic config pull from GitHub
+│
+└── 📄 Metadata
+    ├── LICENSE                                  # License
+    ├── quick-start.sh                           # Quick automated setup (basic)
+    └── verify-installation-package.sh           # Verify all files present
 ```
+
+### New Security Files (⭐ Highlighted)
+
+| File | Purpose | When to Use |
+|------|---------|------------|
+| `configure-tailscale-acl.sh` | Isolate OpenClaw network access via Tailscale ACL | After Step 3 (Tailscale setup) |
+| `OPENCLAW-SECURE-DEPLOYMENT-GUIDE.md` | Complete integration guide | First time deployments |
+| `TAILSCALE-ACL-CONFIGURATION.md` | ACL policy details & verification | Customizing ACL rules |
+| `VMWARE-SHARED-FOLDERS-SECRETS.md` | Secrets storage via VMware shares | After Step 3B (before OpenClaw starts) |
 
 ## Quick Start Summary
 

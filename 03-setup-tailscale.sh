@@ -434,6 +434,52 @@ EOF
     log "INFO" "Tailscale documentation created"
 }
 
+# Configure OpenClaw-specific ACL restrictions
+configure_openclaw_acl() {
+    log "INFO" "Setting up OpenClaw Tailscale ACL isolation..."
+    
+    # Check if running on OpenClaw VM (specific markers)
+    IS_OPENCLAW_VM=false
+    if [[ -d "/opt/openclaw" ]] || [[ "$HOSTNAME" =~ "openclaw" ]]; then
+        IS_OPENCLAW_VM=true
+    fi
+    
+    if [[ "$IS_OPENCLAW_VM" == true ]]; then
+        # Create ACL config directory
+        mkdir -p /opt/openclaw/tailscale
+        chmod 700 /opt/openclaw/tailscale
+        
+        log "INFO" "Generating secure ACL policy for OpenClaw isolation..."
+        
+        # Generate ACL policy that restricts OpenClaw
+        cat > /opt/openclaw/tailscale/acl-policy.hujson << 'EOFACL_SHORT'
+{
+  "version": 1,
+  "groups": {
+    "group:trusted": ["user@example.com", "admin@example.com"],
+    "group:openclaw-admins": ["admin@example.com"]
+  },
+  "tagOwners": {
+    "tag:openclaw": ["group:openclaw-admins"],
+    "tag:trusted": ["group:openclaw-admins"]
+  },
+  "acls": [
+    {"action": "accept", "src": ["group:trusted"], "dst": ["group:trusted:*"], "comment": "Trusted devices inter-access"},
+    {"action": "accept", "src": ["group:trusted"], "dst": ["tag:openclaw:18789"], "comment": "Trusted devices can access OpenClaw gateway"},
+    {"action": "accept", "src": ["group:openclaw-admins"], "dst": ["tag:openclaw:22"], "comment": "Admins can SSH to OpenClaw"},
+    {"action": "accept", "src": ["tag:openclaw"], "dst": ["*:443"], "comment": "OpenClaw can reach internet APIs (HTTPS)"},
+    {"action": "accept", "src": ["tag:openclaw"], "dst": ["*:53"], "comment": "OpenClaw can query DNS"},
+    {"action": "drop", "src": ["tag:openclaw"], "dst": ["tag:trusted:*"], "comment": "BLOCK: OpenClaw cannot reach trusted devices"},
+    {"action": "drop", "src": ["tag:openclaw"], "dst": ["*:*"], "priority": "default", "comment": "BLOCK: Deny all other OpenClaw traffic"}
+  ]
+}
+EOFACL_SHORT
+        
+        log "INFO" "✓ ACL policy template created at: /opt/openclaw/tailscale/acl-policy.hujson"
+        log "WARN" "⚠ IMPORTANT: You must manually apply this ACL policy to your Tailscale network"
+    fi
+}
+
 # Print summary
 print_summary() {
     TAILSCALE_IP=$(tailscale status --json 2>/dev/null | jq -r '.Self.TailscaleIPs[]' 2>/dev/null || echo "Not yet available")
@@ -450,6 +496,7 @@ print_summary() {
 ✓ Firewall rules configured
 ✓ Monitoring script set up
 ✓ Admin utilities created
+✓ OpenClaw isolation ACL generated
 
 TAILSCALE INFORMATION:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -467,25 +514,71 @@ Configuration Files:
   Docs:        $TAILSCALE_CONFIG_DIR/TAILSCALE_GUIDE.md
   ACL Template: $TAILSCALE_CONFIG_DIR/tailscale-acl-template.hujson
 
+SECURITY: TAILSCALE ACL ISOLATION FOR OPENCLAW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠  REQUIRED: Configure OpenClaw network isolation
+
+What the ACL will enforce:
+  ✓ OpenClaw can be reached on port 18789 (gateway) by trusted devices
+  ✓ OpenClaw can reach internet on port 443 (Google, WhatsApp APIs)
+  ✓ OpenClaw can query DNS (port 53)
+  ✗ OpenClaw CANNOT reach other Tailscale devices
+  ✗ OpenClaw CANNOT access SSH (port 22) on other devices
+
+Three Ways to Apply ACL:
+
+  1. RECOMMENDED - Standalone ACL Script (Automatic):
+     ./configure-tailscale-acl.sh --auto --api-token "tskey-api-xxxxx"
+     
+     Steps:
+       a) Get API token: https://login.tailscale.com/admin/settings/personal
+       b) Copy token (starts with "tskey-api-")
+       c) Run: sudo ./configure-tailscale-acl.sh --auto --api-token "YOUR_TOKEN"
+
+  2. Standalone ACL Script (Manual):
+     ./configure-tailscale-acl.sh
+     
+     Steps:
+       a) Copy policy from: /opt/openclaw/tailscale/acl-policy.hujson
+       b) Visit: https://login.tailscale.com/admin/acls
+       c) Paste policy and save
+       d) Wait 30 seconds for rules to apply
+
+  3. Manual Application:
+     Visit: https://login.tailscale.com/admin/acls
+     Replace default policy with generated one at:
+     /opt/openclaw/tailscale/acl-policy.hujson
+
+VERIFICATION:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+After applying ACL, run on OpenClaw VM:
+
+  # Should SUCCEED - Reach Google APIs
+  curl -I https://www.google.com
+
+  # Should FAIL - Try to reach other device (timeout)
+  timeout 5 nc -zv 100.64.x.1 22
+
+  # If installed, run full verification:
+  sudo /opt/openclaw/tailscale/verify-acl-policy.sh
+
 NEXT STEPS:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. Review and update ACL policies:
-   https://login.tailscale.com/admin/acls
-
-2. Configure your organization/team settings:
+1. ✓ Apply OpenClaw ACL policy (see options above)
+2. ✓ Test ACL restrictions (see verification commands)
+3. ⊘ Configure your organization/team settings:
    https://login.tailscale.com/admin/settings/general
-
-3. Add this device to your tailnet
-
-4. Run: sudo ./04-post-install-security.sh
+4. ⊘ Run: sudo ./04-post-install-security.sh
+5. ⊘ Mount shared VMware folder with secrets/credentials
 
 SECURITY REMINDERS:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠  Review connected devices regularly
-⚠  Use ACLs to restrict access
-⚠  Enable 2FA on Tailscale account
-⚠  Monitor logs for unusual activity
-⚠  Disable exit node when not needed
+⚠  API Credentials: Store only in mounted /opt/openclaw/secrets
+⚠  Shared Folder: Mount to /opt/openclaw (NFSv4 from VMware host)
+⚠  ACL Policy: Review before applying to production
+⚠  Test Isolation: Verify using commands above
+⚠  Enable 2FA: On your Tailscale account
+⚠  Monitor logs: Review Tailscale admin console for policy violations
 
 Logs: $LOG_FILE
 
@@ -509,6 +602,7 @@ main() {
     create_tailscale_monitor
     create_tailscale_admin_script
     create_tailscale_docs
+    configure_openclaw_acl
     
     log "INFO" "Would you like to setup exit node? (y/n)"
     read -r setup_exit
