@@ -2,9 +2,10 @@
 
 ##############################################################################
 # OpenClaw Maintenance & Support Script
-# Purpose: Routine maintenance and diagnostic tasks
+# Purpose: Routine maintenance and diagnostic tasks for Docker-based OpenClaw
 # Runs on: Ubuntu 22.04+ or CentOS 8+
 # Usage: sudo ./05-maintenance.sh [task]
+# Note: Works with docker-compose managed services
 ##############################################################################
 
 set -euo pipefail
@@ -49,23 +50,37 @@ health_check() {
     print_section "Service Status"
     systemctl status openclaw --no-pager | head -10
     
-    print_section "Resource Usage"
-    echo "CPU & Memory (Docker containers):"
-    docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}" 2>/dev/null || echo "Docker not available"
+    print_section "Docker Container Status"
+    cd "$OPENCLAW_HOME"
+    docker compose ps || echo "Docker compose error or services not running"
+    
+    print_section "Docker Resource Usage"
+    docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}" openclaw-gateway openclaw-cli 2>/dev/null || echo "Containers not running"
     
     print_section "Disk Space"
     df -h "$OPENCLAW_HOME" /var/log
     
+    print_section "Gateway Health"
+    echo "Testing gateway endpoint..."
+    cd "$OPENCLAW_HOME"
+    docker compose exec -T openclaw-gateway curl -s http://localhost:18789/health 2>/dev/null | head -5 || echo "Health endpoint unavailable"
+    
     print_section "Network Status"
     echo "Listening Ports:"
-    netstat -tlnp 2>/dev/null | grep -E ":(22|8080|443|41641)" || echo "Standard ports"
+    netstat -tlnp 2>/dev/null | grep -E ":(22|18789|18790)" || echo "Checking docker ports..."
+    docker port openclaw-gateway 2>/dev/null || echo "Port mapping not available"
     
     print_section "Tailscale Status"
     sudo tailscale status --json 2>/dev/null | jq '{Self,Connected: (.Peer | length)}' || echo "Tailscale not connected"
     
     print_section "Recent Errors"
-    echo "OpenClaw (last 5 errors):"
+    echo "OpenClaw systemd logs (last 5 errors):"
     journalctl -u openclaw -p err -n 5 --no-pager || echo "None"
+    
+    echo ""
+    echo "OpenClaw gateway logs (last 10 lines):"
+    cd "$OPENCLAW_HOME"
+    docker compose logs --tail=10 openclaw-gateway 2>/dev/null || echo "No docker compose logs"
 }
 
 # Status check
@@ -130,18 +145,28 @@ backup_system() {
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)
     BACKUP_FILE="$BACKUP_DIR/openclaw-backup-$TIMESTAMP.tar.gz"
     
-    echo "Stopping OpenClaw service..."
-    systemctl stop openclaw
+    mkdir -p "$BACKUP_DIR"
     
-    echo "Creating backup: $BACKUP_FILE"
+    echo "Backing up OpenClaw configuration and workspace..."
+    echo "Source: $OPENCLAW_HOME/.openclaw"
+    echo "Target: $BACKUP_FILE"
+    
+    # Backup the .openclaw config and workspace directories (running is ok)
     tar -czf "$BACKUP_FILE" \
-        -C "$OPENCLAW_HOME" config/ data/ logs/ 2>/dev/null || true
-    
-    echo "Restarting OpenClaw service..."
-    systemctl start openclaw
+        -C "$OPENCLAW_HOME" .openclaw/ 2>/dev/null || {
+        echo "✗ Backup failed"
+        return 1
+    }
     
     echo "✓ Backup completed: $BACKUP_FILE"
     echo "Size: $(du -h "$BACKUP_FILE" | cut -f1)"
+    
+    # Optional: Also backup .env file for reference
+    if [[ -f "$OPENCLAW_HOME/.env" ]]; then
+        tar -czf "$BACKUP_DIR/openclaw-config-$TIMESTAMP.tar.gz" \
+            -C "$OPENCLAW_HOME" .env docker-compose.yml 2>/dev/null || true
+        echo "Config backup: $BACKUP_DIR/openclaw-config-$TIMESTAMP.tar.gz"
+    fi
 }
 
 # Restore from backup
@@ -149,25 +174,36 @@ restore_backup() {
     print_header "Restore from Backup"
     
     echo "Available backups:"
-    ls -lh "$BACKUP_DIR"/*.tar.gz 2>/dev/null | awk '{print $9, "(" $5 ")"}'
+    ls -lh "$BACKUP_DIR"/*.tar.gz 2>/dev/null | awk '{print $9, "(" $5 ")"}' || echo "No backups found"
     
     echo ""
-    read -p "Enter backup file to restore: " backup_file
+    read -p "Enter backup file to restore (full path): " backup_file
     
     if [[ ! -f "$backup_file" ]]; then
-        echo "✗ Backup file not found"
+        echo "✗ Backup file not found: $backup_file"
         return 1
     fi
     
+    echo "NOTE: This will overwrite existing config and workspace"
+    read -p "Are you sure? (yes/no): " confirm
+    [[ "$confirm" != "yes" ]] && return 1
+    
     echo "Stopping OpenClaw service..."
-    systemctl stop openclaw
+    cd "$OPENCLAW_HOME"
+    docker compose down --remove-orphans 2>/dev/null || true
     
     echo "Restoring from: $backup_file"
-    tar -xzf "$backup_file" -C "$OPENCLAW_HOME" 2>/dev/null || true
+    tar -xzf "$backup_file" -C "$OPENCLAW_HOME" || {
+        echo "✗ Restore failed"
+        return 1
+    }
     
     echo "Restarting OpenClaw service..."
     systemctl start openclaw
+    sleep 5
     
+    echo "✓ Restore completed"
+    echo "Verify with: sudo systemctl status openclaw"
     echo "✓ Restore completed"
 }
 

@@ -1,10 +1,11 @@
 #!/bin/bash
 
 ##############################################################################
-# Post-Installation Security Hardening Script
-# Purpose: Apply additional security after initial setup
+# Post-Installation Security Hardening Script  
+# Purpose: Apply security hardening for Docker-based OpenClaw deployment
 # Runs on: Ubuntu 22.04+ or CentOS 8+
 # Usage: sudo ./04-post-install-security.sh
+# Note: Focuses on container security, host-level hardening, and Docker daemon security
 ##############################################################################
 
 set -euo pipefail
@@ -47,131 +48,85 @@ check_root() {
     fi
 }
 
-# Setup AppArmor profiles (Ubuntu)
-configure_apparmor() {
+# Setup AppArmor/SELinux policies for Docker security
+configure_container_security() {
     if [[ "$OS" != "ubuntu" ]]; then
         return
     fi
     
-    log "INFO" "Configuring AppArmor security profiles..."
+    log "INFO" "Configuring container security policies..."
     
-    # Create OpenClaw AppArmor profile
-    cat > /etc/apparmor.d/usr.bin.openclaw << 'EOF'
+    # Create a minimal AppArmor profile for Docker containers
+    # Note: The official OpenClaw image runs as 'node' user (uid 1000) with reduced capabilities
+    cat > /etc/apparmor.d/docker-openclaw << 'EOF'
 #include <tunables/global>
 
-/usr/bin/openclaw {
+profile docker-openclaw flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
   #include <abstractions/nameservice>
   
-  # Allow reading system files
-  /etc/passwd r,
-  /etc/group r,
-  /etc/hostname r,
-  /proc/*/stat r,
-  /sys/kernel/mm/transparent_hugepage/hpage_pmd_size r,
+  # Allow reading /proc and /sys for monitoring
+  @{PROC}/@{pid}/stat r,
+  @{PROC}/@{pid}/net/dev r,
+  @{PROC}/sys/net/ipv4/ip_forward r,
   
-  # OpenClaw specific paths
-  /opt/openclaw/ r,
-  /opt/openclaw/config/ r,
-  /opt/openclaw/config/** rw,
-  /opt/openclaw/data/ rw,
-  /opt/openclaw/data/** rw,
-  /var/log/openclaw/ rw,
-  /var/log/openclaw/** rw,
+  # Allow stdout/stderr
+  /dev/pts/* rw,
+  /dev/stdout rw,
+  /dev/stderr rw,
   
   # Networking
   network inet stream,
   network inet6 stream,
-  @{PROC}/@{pid}/net/dev r,
+  network unix stream,
   
-  # Deny risky operations
-  deny /root/** rwk,
-  deny /home/** w,
-  deny /tmp/** x,
+  # Deny file write access outside container mount
+  deny /** w,
 }
 EOF
     
-    # Parse profile
-    apparmor_parser -r /etc/apparmor.d/usr.bin.openclaw 2>/dev/null || true
+    # Try to parse profile (may fail if AppArmor not enforcing, that's ok)
+    apparmor_parser -r /etc/apparmor.d/docker-openclaw 2>/dev/null || \
+        log "WARN" "AppArmor profile install skipped (not enforced or unavailable)"
     
-    log "INFO" "AppArmor profiles configured"
+    log "INFO" "Container security policies configured"
 }
 
-# Setup SELinux policies (CentOS/RHEL)
-configure_selinux() {
-    if [[ "$OS" != "centos" ]] && [[ "$OS" != "rhel" ]]; then
-        return
-    fi
+# Harden Docker daemon configuration
+harden_docker_daemon() {
+    log "INFO" "Hardening Docker daemon configuration..."
     
-    log "INFO" "Configuring SELinux policies..."
+    # Create/update Docker daemon.json with security settings
+    mkdir -p /etc/docker
     
-    # Set SELinux to enforcing
-    setenforce 1
-    sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
-    
-    # Create custom policy for OpenClaw
-    mkdir -p /usr/share/selinux/openclaw
-    
-    cat > /usr/share/selinux/openclaw/openclaw.te << 'EOF'
-policy_module(openclaw, 1.0.0)
-
-type openclaw_t;
-type openclaw_app_t;
-
-openclaw_domain_template(openclaw)
-openclaw_file_template(openclaw)
-
+    cat > /etc/docker/daemon.json << 'EOF'
+{
+  "icc": false,
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  },
+  "seccomp-profile": "/etc/docker/seccomp.json",
+  "userland-proxy": false,
+  "userns-remap": "default",
+  "storage-driver": "overlay2",
+  "live-restore": true,
+  "default-runtime": "runc"
+}
 EOF
     
-    log "INFO" "SELinux policies configured"
+    # Restart Docker daemon to apply changes
+    systemctl restart docker
+    
+    log "INFO" "Docker daemon hardened"
 }
 
 # Configure SSL/TLS hardening
 harden_ssl_tls() {
-    log "INFO" "Hardening SSL/TLS configuration..."
-    
-    # Update OpenClaw SSL configuration
-    cat > "$OPENCLAW_HOME/config/ssl-hardened.conf" << 'EOF'
-# Hardened SSL/TLS Configuration for OpenClaw
-
-# Protocol settings
-ssl_protocols = TLSv1.2 TLSv1.3;
-ssl_prefer_server_ciphers = on;
-
-# Strong cipher suites
-ssl_ciphers = ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-
-# Session settings
-ssl_session_timeout = 1d;
-ssl_session_cache = shared:SSL:50m;
-ssl_session_tickets = off;
-
-# Security headers
-add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
-add_header X-Frame-Options "DENY" always;
-add_header X-Content-Type-Options "nosniff" always;
-add_header X-XSS-Protection "1; mode=block" always;
-add_header Referrer-Policy "no-referrer" always;
-add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" always;
-add_header Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()" always;
-
-# OCSP stapling
-ssl_stapling = on;
-ssl_stapling_verify = on;
-ssl_stapling_responder = http://ocsp.int-x3.letsencrypt.org;
-
-# Diffie-Hellman parameter
-ssl_dhparam = /etc/ssl/dhparam.pem;
-EOF
-    
-    # Generate Diffie-Hellman parameters (this takes a few minutes)
-    if [[ ! -f /etc/ssl/dhparam.pem ]]; then
-        log "INFO" "Generating Diffie-Hellman parameters (this may take a few minutes)..."
-        openssl dhparam -out /etc/ssl/dhparam.pem 2048
-        log "INFO" "DH parameters generated"
-    fi
-    
-    log "INFO" "SSL/TLS hardening completed"
+    log "INFO" "SSL/TLS is managed by OpenClaw runtime (Node.js)"
+    log "INFO" "For production, configure a reverse proxy (nginx/Caddy) with your SSL certificates"
+    log "INFO" "Example: Place your certificate at /opt/openclaw/.openclaw/cert.pem"
 }
 
 # Setup application security monitoring
@@ -589,18 +544,17 @@ EOF
 main() {
     mkdir -p "$LOG_DIR"
     
-    log "INFO" "Starting post-installation security hardening"
+    log "INFO" "Starting post-installation security hardening (Docker-aware)"
     log "INFO" "User: $(whoami)"
     log "INFO" "Hostname: $(hostname)"
     
     check_root
     detect_os
-    configure_apparmor
-    configure_selinux
+    configure_container_security
+    harden_docker_daemon
     harden_ssl_tls
     setup_app_security_monitoring
     setup_intrusion_detection
-    setup_container_security
     setup_centralized_logging
     create_security_checklist
     

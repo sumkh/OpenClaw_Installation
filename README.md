@@ -36,20 +36,30 @@ sudo ./01-initial-setup.sh
 - Configures SELinux (if on CentOS/RHEL)
 - Sets up system monitoring
 
-### Step 2: Install OpenClaw (5-10 minutes)
-Run the OpenClaw installation script:
+### Step 2: Install OpenClaw (8-15 minutes)
+Run the OpenClaw installation script (official Docker-based):
 ```bash
 sudo chmod +x 02-install-openclaw.sh
 sudo ./02-install-openclaw.sh
 ```
 
 **What it does:**
-- Installs dependencies (Docker, required libraries)
-- Downloads and verifies OpenClaw from official sources
-- Creates dedicated service account for OpenClaw
-- Configures systemd service
-- Sets up file permissions following least privilege
-- Creates backup directories
+- Installs Docker and Docker Compose
+- Clones the official OpenClaw repository from GitHub
+- Builds the Docker image with all dependencies
+- Creates dedicated service account (openclaw user)
+- Generates secure gateway token
+- Configures docker-compose with environment variables
+- Creates systemd service for auto-management
+- Starts the gateway service (runs on port 18789)
+
+**After installation:**
+- Gateway is running as a systemd service
+- Config and workspace are at `/opt/openclaw/.openclaw`
+- Optional: Run the onboarding wizard to configure provider channels
+  ```bash
+  sudo docker compose -f /opt/openclaw/docker-compose.yml run --rm openclaw-cli onboard
+  ```
 
 ### Step 3: Setup Tailscale VPN (3-5 minutes)
 Secure your access with Tailscale:

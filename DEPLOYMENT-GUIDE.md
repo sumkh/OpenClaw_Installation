@@ -2,7 +2,15 @@
 
 ## Executive Summary
 
-This guide provides complete step-by-step instructions for deploying OpenClaw securely on VMware virtual machines with Tailscale VPN integration. The deployment follows security best practices including system hardening, network isolation, container security, and automated monitoring.
+This guide provides complete step-by-step instructions for deploying OpenClaw securely using the official Docker-based installation on VMware virtual machines with Tailscale VPN integration. The deployment follows security best practices including system hardening, network isolation, container security, and automated monitoring.
+
+**Key Points:**
+- Uses official OpenClaw Docker image built from the GitHub repository
+- Containerized deployment via docker-compose for portability
+- Systemd service management for auto-restart and stability
+- Tailscale VPN for secure remote access
+- Host-level security hardening (firewall, SSH, intrusion detection)
+- GitOps workflow for configuration via JARVIS repository
 
 ---
 

@@ -2,9 +2,10 @@
 
 ##############################################################################
 # Tailscale VPN Setup Script
-# Purpose: Securely configure Tailscale for remote access
+# Purpose: Securely configure Tailscale for remote access to OpenClaw gateway
 # Runs on: Ubuntu 22.04+ or CentOS 8+
 # Usage: sudo ./03-setup-tailscale.sh
+# Note: Compatible with Docker-containerized OpenClaw (v2+)
 ##############################################################################
 
 set -euo pipefail

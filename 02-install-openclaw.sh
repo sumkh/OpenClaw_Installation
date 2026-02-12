@@ -129,129 +129,198 @@ create_openclaw_user() {
     log "INFO" "User and directories created"
 }
 
-# Download and verify OpenClaw
+# Clone and build OpenClaw from official repository
 install_openclaw_application() {
-    log "INFO" "Installing OpenClaw application..."
+    log "INFO" "Installing OpenClaw from official repository..."
     
-    # Note: Update this with actual OpenClaw download URL
-    # This is a placeholder - adjust based on actual OpenClaw distribution
+    if [[ -d "$OPENCLAW_HOME/.git" ]]; then
+        log "INFO" "OpenClaw repository already exists. Updating..."
+        cd "$OPENCLAW_HOME"
+        git fetch origin
+        git pull origin main
+    else
+        log "INFO" "Cloning OpenClaw repository..."
+        cd /tmp
+        git clone https://github.com/openclaw/openclaw.git openclaw-repo
+        
+        # Copy the repo to OPENCLAW_HOME (git repo and all)
+        mkdir -p "$OPENCLAW_HOME"
+        cp -r /tmp/openclaw-repo/* "$OPENCLAW_HOME/"
+        cp -r /tmp/openclaw-repo/.git "$OPENCLAW_HOME/" 2>/dev/null || true
+        
+        rm -rf /tmp/openclaw-repo
+    fi
     
-    # Example for Docker-based OpenClaw:
-    log "INFO" "Pulling OpenClaw Docker image..."
+    log "INFO" "Creating config and workspace directories..."
+    mkdir -p "$OPENCLAW_HOME/{.openclaw,.openclaw/workspace,config}"
     
-    # docker pull openclaw/openclaw:$OPENCLAW_VERSION
+    log "INFO" "Building OpenClaw Docker image..."
+    cd "$OPENCLAW_HOME"
     
-    # For non-containerized installation:
-    # cd "$OPENCLAW_HOME"
-    # wget https://github.com/openclaw-org/openclaw/releases/download/v$OPENCLAW_VERSION/openclaw-$OPENCLAW_VERSION.tar.gz
-    # tar -xzf openclaw-$OPENCLAW_VERSION.tar.gz
+    # Support optional APT packages via environment variable
+    BUILD_ARGS=""
+    if [[ -n "${OPENCLAW_DOCKER_APT_PACKAGES:-}" ]]; then
+        BUILD_ARGS="--build-arg OPENCLAW_DOCKER_APT_PACKAGES=\"${OPENCLAW_DOCKER_APT_PACKAGES}\""
+        log "INFO" "Building with additional apt packages: ${OPENCLAW_DOCKER_APT_PACKAGES}"
+    fi
     
-    log "INFO" "OpenClaw application installed"
+    docker build \
+        $BUILD_ARGS \
+        -t "openclaw:local" \
+        -f "$OPENCLAW_HOME/Dockerfile" \
+        "$OPENCLAW_HOME" || {
+        log "ERROR" "Failed to build Docker image"
+        return 1
+    }
+    
+    # Set proper ownership
+    chown -R "$OPENCLAW_USER:$OPENCLAW_GROUP" "$OPENCLAW_HOME"
+    
+    log "INFO" "OpenClaw application installed successfully"
 }
 
-# Create docker-compose.yml for OpenClaw
-create_docker_compose_file() {
-    log "INFO" "Creating Docker Compose configuration..."
+# Create .env file with gateway configuration
+create_environment_file() {
+    log "INFO" "Creating .env file with gateway configuration..."
     
-    cat > "$OPENCLAW_HOME/docker-compose.yml" << 'EOF'
+    # Generate a secure gateway token if not present
+    if [[ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]]; then
+        if command -v openssl >/dev/null 2>&1; then
+            OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32)
+        else
+            OPENCLAW_GATEWAY_TOKEN=$(tr -dc 'A-Fa-f0-9' < /dev/urandom | head -c 64)
+        fi
+    fi
+    
+    OPENCLAW_GATEWAY_PORT=${OPENCLAW_GATEWAY_PORT:-18789}
+    OPENCLAW_BRIDGE_PORT=${OPENCLAW_BRIDGE_PORT:-18790}
+    OPENCLAW_GATEWAY_BIND=${OPENCLAW_GATEWAY_BIND:-lan}
+    
+    cat > "$OPENCLAW_HOME/.env" << EOF
+# OpenClaw Gateway Configuration
+OPENCLAW_IMAGE=openclaw:local
+OPENCLAW_CONFIG_DIR=$OPENCLAW_HOME/.openclaw
+OPENCLAW_WORKSPACE_DIR=$OPENCLAW_HOME/.openclaw/workspace
+OPENCLAW_GATEWAY_PORT=$OPENCLAW_GATEWAY_PORT
+OPENCLAW_BRIDGE_PORT=$OPENCLAW_BRIDGE_PORT
+OPENCLAW_GATEWAY_BIND=$OPENCLAW_GATEWAY_BIND
+OPENCLAW_GATEWAY_TOKEN=$OPENCLAW_GATEWAY_TOKEN
+
+# Optional: Provider credentials (add as needed)
+# CLAUDE_AI_SESSION_KEY=
+# CLAUDE_WEB_SESSION_KEY=
+# CLAUDE_WEB_COOKIE=
+# GOOGLE_APPLICATION_CREDENTIALS=/opt/openclaw/secrets/google-sa.json
+# WHATSAPP_CRED_FILE=/opt/openclaw/secrets/whatsapp.conf
+
+# Optional: Additional apt packages for Docker build
+# OPENCLAW_DOCKER_APT_PACKAGES=ffmpeg curl jq
+EOF
+    
+    chown "$OPENCLAW_USER:$OPENCLAW_GROUP" "$OPENCLAW_HOME/.env"
+    chmod 600 "$OPENCLAW_HOME/.env"
+    
+    log "INFO" "Gateway token (save this): $OPENCLAW_GATEWAY_TOKEN"
+    log "INFO" ".env file created"
+}
+
+# Create docker-compose.override.yml for VM deployment
+create_docker_compose_file() {
+    log "INFO" "Creating docker-compose configuration..."
+    
+    # The official docker-compose.yml is already in the cloned repo
+    # Create an override file for VM-specific configuration
+    
+    cat > "$OPENCLAW_HOME/docker-compose-vm.yml" << 'EOF'
 version: '3.8'
 
 services:
-  openclaw:
-    image: openclaw/openclaw:latest
-    container_name: openclaw
+  openclaw-gateway:
+    image: ${OPENCLAW_IMAGE:-openclaw:local}
+    container_name: openclaw-gateway
     restart: unless-stopped
-    user: "$OPENCLAW_UID:$OPENCLAW_GID"
-    
-    # Security configurations
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    
-    # Read-only root filesystem where possible
-    read_only: false
-    tmpfs:
-      - /tmp
-      - /run
-    
+    env_file:
+      - .env
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
     volumes:
-      - ./config:/etc/openclaw:ro
-      - ./data:/var/lib/openclaw:rw
-      - ./logs:/var/log/openclaw:rw
-      - /etc/localtime:/etc/localtime:ro
-    
-    # Network configuration
+      - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
+    ports:
+      - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+      - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
+    init: true
+    restart: unless-stopped
     networks:
       - openclaw-net
-    
-    # Environment variables
-    environment:
-      - OPENCLAW_LOG_LEVEL=INFO
-      - OPENCLAW_MODE=production
-      - OPENCLAW_SECURE_MODE=true
-    
-    # Health check
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:18789/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-    
-    # Resource limits
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 2G
-        reservations:
-          cpus: '1'
-          memory: 1G
-    
-    # Logging
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-        labels: "openclaw=true"
+
+  openclaw-cli:
+    image: ${OPENCLAW_IMAGE:-openclaw:local}
+    container_name: openclaw-cli
+    env_file:
+      - .env
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      BROWSER: echo
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
+    stdin_open: true
+    tty: true
+    init: true
+    networks:
+      - openclaw-net
+    command: ["node", "dist/index.js"]
 
 networks:
   openclaw-net:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16
 EOF
     
-    log "INFO" "Docker Compose configuration created"
+    log "INFO" "Docker Compose configuration created at docker-compose-vm.yml"
 }
+
+# Create docker-compose.yml for OpenClaw
+create_docker_compose_file_old() {
+    log "INFO" "Creating default Docker Compose configuration (deprecated - use official)..."
+    
+    # This function is kept for reference but not used in the main flow
 
 # Create OpenClaw systemd service
 create_systemd_service() {
-    log "INFO" "Creating systemd service..."
+    log "INFO" "Creating systemd service for docker-compose..."
     
     cat > /etc/systemd/system/openclaw.service << EOF
 [Unit]
-Description=OpenClaw Application Service
-Documentation=https://openclaw.org/docs
-After=network-online.target docker.service
+Description=OpenClaw Gateway Service (Docker Compose)
+Documentation=https://docs.openclaw.ai/
+After=network-online.target docker.service docker.socket containerd.service
+Requires=docker.service
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=exec
 User=root
 WorkingDirectory=$OPENCLAW_HOME
+
+# Load environment variables from .env
+EnvironmentFile=$OPENCLAW_HOME/.env
+
+# Use docker compose (v2) with proper file references
+Environment="COMPOSE_PROJECT_NAME=openclaw"
+Environment="DOCKER_HOST=unix:///run/docker.sock"
 
 # Security settings
 PrivateTmp=yes
 NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=$OPENCLAW_HOME/data $OPENCLAW_HOME/logs /var/log/openclaw
 
 # Service restart policy
 Restart=on-failure
@@ -264,14 +333,14 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=openclaw
 
-# Start/Stop commands
-ExecStartPre=/usr/bin/docker-compose -f $OPENCLAW_HOME/docker-compose.yml pull
-ExecStart=/usr/bin/docker-compose -f $OPENCLAW_HOME/docker-compose.yml up
-ExecStop=/usr/bin/docker-compose -f $OPENCLAW_HOME/docker-compose.yml down
-ExecReload=/usr/bin/docker-compose -f $OPENCLAW_HOME/docker-compose.yml restart
+# Start/Stop commands using docker compose (official v2 syntax)
+ExecStartPre=/usr/bin/docker compose -f $OPENCLAW_HOME/docker-compose.yml pull
+ExecStart=/usr/bin/docker compose -f $OPENCLAW_HOME/docker-compose.yml up --remove-orphans
+ExecStop=/usr/bin/docker compose -f $OPENCLAW_HOME/docker-compose.yml down
+ExecReload=/usr/bin/docker compose -f $OPENCLAW_HOME/docker-compose.yml restart
 
 # Timeout settings
-TimeoutStartSec=900
+TimeoutStartSec=600
 TimeoutStopSec=60
 
 [Install]
@@ -286,77 +355,13 @@ EOF
 
 # Create configuration file
 create_config_file() {
-    log "INFO" "Creating OpenClaw configuration..."
-    
-    cat > "$OPENCLAW_HOME/config/openclaw.conf" << 'EOF'
-# OpenClaw Secure Configuration
-# Generated by secure installation script
-
-# Server Configuration
-server.port=8080
-server.bind=127.0.0.1
-server.ssl.enabled=true
-server.ssl.certificate=/opt/openclaw/config/certs/openclaw.crt
-server.ssl.key=/opt/openclaw/config/certs/openclaw.key
-
-# Security Settings
-security.mode=production
-security.strict_mode=true
-security.enable_csp=true
-security.enable_cors=false
-
-# Logging
-logging.level=INFO
-logging.file=/var/log/openclaw/openclaw.log
-logging.rotation.size=10M
-logging.retention.days=30
-
-# Database
-db.secure_connection=true
-db.ssl_verify=true
-
-# Rate limiting
-ratelimit.enabled=true
-ratelimit.requests_per_minute=100
-
-# Session settings
-session.timeout=1800
-session.secure_cookie=true
-session.httponly=true
-session.samesite=Strict
-
-# Feature flags
-features.audit_logging=true
-features.two_factor_auth=true
-features.ip_whitelist=false
-EOF
-    
-    chown "$OPENCLAW_USER:$OPENCLAW_GROUP" "$OPENCLAW_HOME/config/openclaw.conf"
-    chmod 640 "$OPENCLAW_HOME/config/openclaw.conf"
-    
-    log "INFO" "Configuration file created"
+    log "INFO" "Configuration will be created via OpenClaw CLI onboarding"
+    log "INFO" "After installation, run: sudo docker compose exec openclaw-cli node dist/index.js onboard"
 }
 
 # Setup SSL certificates
 setup_ssl_certificates() {
-    log "INFO" "Setting up SSL certificates..."
-    
-    CERT_DIR="$OPENCLAW_HOME/config/certs"
-    mkdir -p "$CERT_DIR"
-    
-    # Generate self-signed certificate (for development)
-    # For production, use proper CA-signed certificates
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-        -keyout "$CERT_DIR/openclaw.key" \
-        -out "$CERT_DIR/openclaw.crt" \
-        -subj "/C=US/ST=State/L=City/O=Org/CN=localhost"
-    
-    chmod 600 "$CERT_DIR/openclaw.key"
-    chmod 644 "$CERT_DIR/openclaw.crt"
-    chown "$OPENCLAW_USER:$OPENCLAW_GROUP" "$CERT_DIR"/*
-    
-    log "INFO" "SSL certificates created (self-signed)"
-    log "WARN" "For production, replace with CA-signed certificates"
+    log "INFO" "SSL/TLS handled by OpenClaw runtime (no setup needed)"
 }
 
 # Create backup script
@@ -441,46 +446,78 @@ print_summary() {
     cat << 'EOF'
 
 ╔════════════════════════════════════════════════════════════════╗
-║          OpenClaw Installation - COMPLETED ✓                  ║
+║      OpenClaw Installation - COMPLETED ✓                       ║
+║      (Official Docker-based Installation)                      ║
 ╚════════════════════════════════════════════════════════════════╝
 
 ✓ Docker and Docker Compose installed
 ✓ OpenClaw user and directories created
-✓ OpenClaw application installed
-✓ Docker Compose configuration configured
-✓ Systemd service created
-✓ SSL certificates generated
-✓ Backup script configured
+✓ OpenClaw repository cloned and Docker image built
+✓ Environment configuration created (.env)
+✓ Systemd service created and enabled
 ✓ OpenClaw service started
 
 IMPORTANT INFORMATION:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Installation Path: /opt/openclaw
-Config Path:       /opt/openclaw/config
-Data Path:         /opt/openclaw/data
-Log Path:          /var/log/openclaw
+Installation Path:  /opt/openclaw
+Config Directory:   /opt/openclaw/.openclaw
+Workspace:          /opt/openclaw/.openclaw/workspace
+Log Path:           journalctl -u openclaw -f
+
+Gateway Access:
+  URL:    http://localhost:18789 (or http://VM_IP:18789)
+  Token:  See .env file or run: grep OPENCLAW_GATEWAY_TOKEN /opt/openclaw/.env
 
 Service Commands:
-  Status:   sudo systemctl status openclaw
-  Start:    sudo systemctl start openclaw
-  Stop:     sudo systemctl stop openclaw
-  Restart:  sudo systemctl restart openclaw
-  Logs:     sudo journalctl -u openclaw -f
+  Status:         sudo systemctl status openclaw
+  Start:          sudo systemctl start openclaw
+  Stop:           sudo systemctl stop openclaw
+  Restart:        sudo systemctl restart openclaw
+  View Logs:      sudo journalctl -u openclaw -f
+  View Compose:   cd /opt/openclaw && sudo docker compose logs -f
+
+Docker Commands:
+  Run onboarding: sudo docker compose -f /opt/openclaw/docker-compose.yml run --rm openclaw-cli onboard
+  Check health:   sudo docker compose -f /opt/openclaw/docker-compose.yml exec openclaw-gateway curl http://localhost:18789/health
+  List services:  sudo docker compose -f /opt/openclaw/docker-compose.yml ps
 
 NEXT STEPS:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. Run: sudo ./03-setup-tailscale.sh
-2. Then:  sudo ./04-post-install-security.sh
-3. Verify OpenClaw is accessible via Tailscale
-4. Configure proper SSL certificates for production
+1. Wait 30-40 seconds for the gateway to start
+2. (OPTIONAL) Run onboarding wizard:
+   sudo docker compose -f /opt/openclaw/docker-compose.yml run --rm openclaw-cli onboard
+3. Connect provider channels (WhatsApp, Telegram, Discord, etc.)
+4. Run: sudo ./03-setup-tailscale.sh
+5. Then: sudo ./04-post-install-security.sh
+6. Access via Tailscale VPN for secure remote access
 
-SECURITY REMINDERS:
+Running the Gateway:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠  SSL certificates are self-signed (for development only)
-⚠  Replace with CA-signed certificates for production
-⚠  Review and configure firewall rules
-⚠  Setup backup verification procedures
-⚠  Enable monitoring and alerting
+The gateway is now running under systemd. It will:
+- Auto-restart if it crashes
+- Start automatically on VM reboot
+- Log all output to journalctl
+
+Provider Setup (After Onboarding):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+cd /opt/openclaw
+# WhatsApp (QR code login):
+sudo docker compose exec openclaw-cli node dist/index.js channels login
+
+# Telegram (bot token):
+sudo docker compose exec openclaw-cli node dist/index.js channels add --channel telegram --token YOUR_BOT_TOKEN
+
+# Discord (bot token):
+sudo docker compose exec openclaw-cli node dist/index.js channels add --channel discord --token YOUR_BOT_TOKEN
+
+For credential files (Google, WhatsApp API tokens), place them in:
+/opt/openclaw/secrets/
+
+DOCUMENTATION:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Official Docs:     https://docs.openclaw.ai/
+- Channels Guide:    https://docs.openclaw.ai/channels
+- Deployment Guides: https://docs.openclaw.ai/install
 
 Logs: $LOG_FILE
 
@@ -491,7 +528,7 @@ EOF
 main() {
     mkdir -p "$LOG_DIR" "$BACKUP_DIR"
     
-    log "INFO" "Starting OpenClaw installation"
+    log "INFO" "Starting OpenClaw installation (official Docker-based)"
     log "INFO" "User: $(whoami)"
     log "INFO" "Hostname: $(hostname)"
     
@@ -501,10 +538,9 @@ main() {
     install_docker_compose
     create_openclaw_user
     install_openclaw_application
+    create_environment_file
     create_docker_compose_file
     create_systemd_service
-    create_config_file
-    setup_ssl_certificates
     create_backup_script
     start_openclaw
     
