@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  openclaw:
+    build: ./
+    image: openclaw:local
+    container_name: openclaw
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./config:/opt/openclaw/config:ro
+      - ./data:/opt/openclaw/data:rw
+      - /opt/openclaw/secrets:/opt/openclaw/secrets:ro
+    environment:
+      - OPENCLAW_HOME=/opt/openclaw
+      - GOOGLE_APPLICATION_CREDENTIALS=/opt/openclaw/secrets/google-sa.json
+      - WHATSAPP_CRED_FILE=/opt/openclaw/secrets/whatsapp.conf
+    ports:
+      - "8080:8080"
+    networks:
+      - openclaw-net
+
+networks:
+  openclaw-net:
+    driver: bridge
