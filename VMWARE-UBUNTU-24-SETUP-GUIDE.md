@@ -340,7 +340,28 @@ sudo apt autoremove -y
 
 Expected time: 2-5 minutes (first update can install many packages)
 
-### Step 3: Configure Static IP (Optional but Recommended)
+### Step 3: Install open-vm-tools (Recommended for VMware)
+
+**Why:** open-vm-tools provides better integration, performance optimization, and guest OS detection in VMware.
+
+```bash
+sudo apt install -y open-vm-tools open-vm-tools-desktop
+sudo systemctl restart open-vm-tools
+```
+
+**Verify installation:**
+```bash
+vmtoolsd --version
+```
+
+Output should show version number (e.g., `open-vm-tools 12.4.x`).
+
+**Optional:** If using 3D graphics or clipboard sharing:
+```bash
+sudo apt install -y open-vm-tools-containerinfo
+```
+
+### Step 4: Configure Static IP (Optional but Recommended)
 
 **Check current IP:**
 ```bash
@@ -376,7 +397,7 @@ sudo netplan apply
 ip addr show
 ```
 
-### Step 4: Harden SSH (Important!)
+### Step 5: Harden SSH (Important!)
 
 ```bash
 sudo nano /etc/ssh/sshd_config
@@ -384,10 +405,11 @@ sudo nano /etc/ssh/sshd_config
 
 Make these changes:
 ```
-PermitRootLogin no
-PasswordAuthentication no
-PubkeyAuthentication yes
-X11Forwarding no
+sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sudo sed -i 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+sudo sed -i 's/^#\?X11Forwarding.*/X11Forwarding no/' /etc/ssh/sshd_config
+sudo systemctl restart ssh
 ```
 
 **Restart SSH:**
@@ -395,7 +417,7 @@ X11Forwarding no
 sudo systemctl restart ssh
 ```
 
-### Step 5: Set Hostname
+### Step 6: Set Hostname
 
 ```bash
 sudo hostnamectl set-hostname openclaw-gateway
@@ -408,10 +430,11 @@ Add:
 127.0.1.1   openclaw-gateway
 ```
 
-### Step 6: Set Timezone (Important for Logs)
+### Step 7: Set Timezone (Important for Logs)
 
 ```bash
-sudo timedatectl set-timezone UTC
+# sudo timedatectl set-timezone UTC
+sudo timedatectl set-timezone Asia/Singapore
 # or your preferred timezone: timedatectl list-timezones
 ```
 

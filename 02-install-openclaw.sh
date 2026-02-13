@@ -288,12 +288,6 @@ EOF
     log "INFO" "Docker Compose configuration created at docker-compose-vm.yml"
 }
 
-# Create docker-compose.yml for OpenClaw
-create_docker_compose_file_old() {
-    log "INFO" "Creating default Docker Compose configuration (deprecated - use official)..."
-    
-    # This function is kept for reference but not used in the main flow
-
 # Create OpenClaw systemd service
 create_systemd_service() {
     log "INFO" "Creating systemd service for docker-compose..."
