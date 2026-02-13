@@ -610,6 +610,132 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
 ---
 
+## First Boot & SSH Connection Troubleshooting
+
+### Problem: Cannot SSH to VM
+
+If you're having trouble connecting to the VM via SSH (e.g., "command not found" on network utilities):
+
+#### Step 1: Get the VM's IP Address
+
+**On the VM Console** (directly at VMware ESXi/Workstation):
+
+```bash
+# ✓ Correct Linux commands:
+ip addr show          # Shows all network interfaces and IPs
+hostname -I           # Shows just the IP address
+ip route              # Shows network routes
+
+# ✗ Do NOT use (these are Windows commands):
+ipconfig              # NOT on Linux
+ipconfig /all         # NOT on Linux
+```
+
+**Save the IP address** (e.g., `192.168.1.101`)
+
+#### Step 2: SSH from Host Machine
+
+**On your host machine** (Windows, Mac, Linux):
+
+```powershell
+# PowerShell on Windows:
+ssh ubuntu@192.168.1.101
+# Replace 192.168.1.101 with your actual VM IP
+
+# macOS/Linux terminal:
+ssh ubuntu@192.168.1.101
+```
+
+**First connection prompt:**
+```
+The authenticity of host '192.168.1.101 (192.168.1.101)' can't be established.
+Are you sure you want to continue connecting (yes/no)?
+```
+
+**Type `yes` and press Enter.**
+
+#### Step 3: If SSH Fails - Troubleshooting
+
+**Check SSH service is running (on VM):**
+```bash
+sudo systemctl status ssh
+# Expected: active (running)
+
+# If not running:
+sudo systemctl start ssh
+sudo systemctl enable ssh
+```
+
+**Check network connectivity (on VM):**
+```bash
+ping 8.8.8.8
+# Should get responses
+
+# Check firewall isn't blocking SSH:
+sudo ufw status
+sudo ufw allow 22/tcp   # Allow SSH if needed
+```
+
+**Test SSH locally (on VM):**
+```bash
+ssh localhost
+# If this fails, SSH service has issues
+
+# If it works, try direct SSH from host again
+```
+
+**Verify SSH is listening (on VM):**
+```bash
+sudo ss -tlnp | grep ssh
+# Should show:
+# tcp   0   0 0.0.0.0:22   0.0.0.0:*   LISTEN
+```
+
+#### Step 4: Password vs. SSH Keys
+
+**If using password authentication** (set during Ubuntu installation):
+```bash
+# Just enter your password when prompted:
+ssh ubuntu@192.168.1.101
+# Password: [type your Ubuntu password]
+```
+
+**If using SSH keys:**
+```bash
+# First time setup - generate key pair:
+ssh-keygen -t ed25519 -f ~/.ssh/id_rsa -N ""
+
+# Copy public key to VM:
+ssh-copy-id -i ~/.ssh/id_rsa.pub ubuntu@192.168.1.101
+
+# Future logins don't need password
+```
+
+### Common SSH Issues
+
+| Issue | Solution |
+|-------|----------|
+| "Connection refused" | `sudo systemctl start ssh` on VM |
+| "Connection timed out" | Check VM IP is correct; verify network connectivity |
+| "Permission denied" | Use correct password or SSH key; check key permissions |
+| "Command not found" | Using Windows commands; see table below |
+
+### Command Reference: Linux vs Windows
+
+| Task | Windows | Linux/Ubuntu |
+|------|---------|--------------|
+| **List network interfaces** | `ipconfig` | `ip addr show` |
+| **Get IP only** | `ipconfig /all` | `hostname -I` |
+| **List processes** | `tasklist` | `ps aux` |
+| **Clear screen** | `cls` | `clear` |
+| **Check disk space** | `dir` | `df -h` |
+| **Check memory** | `systeminfo` | `free -h` |
+| **Restart service** | `net start svc` | `sudo systemctl start svc` |
+
+**Key point:** Once you SSH into the Ubuntu VM, you're in Linux. Use Linux commands, not Windows commands.
+
+---
+
 ## Post-VM Creation Checklist
 
 - [ ] VM boots successfully to login prompt

@@ -285,6 +285,25 @@ Architecture and integration documentation:
 - Pre/post-installation checklists
 - Security implications
 
+### � **[VMWARE-SHARED-FOLDERS-SECRETS.md](VMWARE-SHARED-FOLDERS-SECRETS.md)**
+Complete guide for mounting VMware shared folders to store credentials securely:
+- NFS, CIFS/SMB, VMHGFS mount options
+- Docker volume configuration
+- Persistent mount setup
+- Secrets rotation procedures
+- Permission management & security best practices
+
+**Key feature:** Credentials stored on host, mounted read-only to containers
+
+### 🌐 **[TAILSCALE-INTEGRATION.md](TAILSCALE-INTEGRATION.md)**
+Architecture and integration documentation:
+- Existing Tailscale network compatibility
+- Network topology diagrams
+- Zero-conflict multi-device mesh
+- ACL policy templates & examples
+- Pre/post-installation checklists
+- Security implications
+
 ### 💻 **[VMWARE-UBUNTU-24-SETUP-GUIDE.md](VMWARE-UBUNTU-24-SETUP-GUIDE.md)**
 Step-by-step VMware VM provisioning guide:
 - vSphere/Workstation console navigation
@@ -293,6 +312,17 @@ Step-by-step VMware VM provisioning guide:
 - Post-install hardening (SSH, NTP, static IP)
 - Pre-deployment verification checklist
 - Hardware comparison table (Min/Recommended/Production)
+- **⭐ NEW: First SSH connection troubleshooting**
+
+### 🔧 **[SSH-CONNECTION-TROUBLESHOOTING.md](SSH-CONNECTION-TROUBLESHOOTING.md)** (NEW!)
+Quick reference for SSH connection issues:
+- Getting VM IP address (use `hostname -I`, not `ipconfig`)
+- SSH service verification
+- Firewall troubleshooting
+- Common SSH errors and solutions
+- Linux vs Windows command reference
+
+**Use this if you see "command not found" or SSH connection issues**
 
 ---
 
